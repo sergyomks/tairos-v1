@@ -80,10 +80,13 @@ export default function WorkspacePage() {
       const res = await apiFetch('/api/v1/memory/documents');
       if (res.ok) {
         const data = await res.json();
-        setDocuments(data);
+        setDocuments(Array.isArray(data) ? data : []);
+        setUploadError(null);
+      } else {
+        setUploadError('No se pudieron cargar los documentos del backend.');
       }
     } catch {
-      // Backend no disponible; se deja la lista vacía silenciosamente
+      setUploadError('No se pudo conectar con el backend. Verifica que esté corriendo (y ngrok si usas Vercel).');
     }
     setLoadingDocs(false);
   };
