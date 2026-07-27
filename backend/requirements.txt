@@ -12,3 +12,7 @@ litellm>=1.30.0
 neo4j>=5.18.0
 python-dotenv>=1.0.1
 httpx>=0.24.0
+openai>=1.30.0
+pypdf>=4.2.0
+python-docx>=1.1.0
+python-multipart>=0.0.9

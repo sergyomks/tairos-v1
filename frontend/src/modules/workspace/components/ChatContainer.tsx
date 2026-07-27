@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState } from 'react';
-import { Bot, MoreHorizontal, Send, HelpCircle } from "lucide-react";
+import { Bot, MoreHorizontal, Send, HelpCircle, AlertCircle } from "lucide-react";
+import { apiFetch } from '@/modules/core/infrastructure/api';
 
 interface Message {
   name: string;
@@ -9,6 +10,8 @@ interface Message {
   color?: string;
   text: string;
   isAi: boolean;
+  sources?: { document_name: string; similarity: number }[];
+  isError?: boolean;
 }
 
 const initialMessages: Message[] = [
@@ -42,22 +45,10 @@ const initialMessages: Message[] = [
 ];
 
 const sampleQueries = [
-  {
-    q: "¿Qué decidimos hace dos meses?",
-    a: "Según el registro de la reunión de arquitectura del 24 de Mayo (Proyecto Alpha), decidimos implementar una base de datos vectorial local con PostgreSQL + pgvector para el RAG inicial de 10K documentos, descartando Pinecone por motivos de costo de infraestructura."
-  },
-  {
-    q: "¿Por qué elegimos PostgreSQL?",
-    a: "Elegimos PostgreSQL porque: 1) pgvector cubre el alcance vectorial sin costo extra, 2) mantiene la consistencia relacional de clientes y proyectos en el mismo motor, y 3) simplifica las copias de seguridad de la memoria organizacional en un solo volumen."
-  },
-  {
-    q: "¿Qué aprendimos del proyecto X?",
-    a: "Del proyecto Nimbus HR aprendimos que el parseo estándar de PDF con PyPDF perdía la estructura de las tablas financieras. La lección registrada en la memoria es usar siempre IBM Docling para la extracción estructurada."
-  },
-  {
-    q: "¿Qué agentes participaron?",
-    a: "En el último ciclo del Proyecto Alpha participaron 3 agentes: 1) Agente Investigador (análisis técnico), 2) Agente Arquitecto (especificaciones), y 3) Agente QA (validación de pruebas unitarias)."
-  }
+  { q: "¿Qué decidimos hace dos meses?" },
+  { q: "¿Por qué elegimos PostgreSQL?" },
+  { q: "¿Qué aprendimos del proyecto X?" },
+  { q: "¿Qué agentes participaron?" },
 ];
 
 export default function ChatContainer() {
@@ -65,8 +56,8 @@ export default function ChatContainer() {
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
 
-  const handleSend = (textToSend: string) => {
-    if (!textToSend.trim()) return;
+  const handleSend = async (textToSend: string) => {
+    if (!textToSend.trim() || isTyping) return;
 
     const newMsg: Message = {
       name: "Alex R.",
@@ -80,27 +71,36 @@ export default function ChatContainer() {
     setInput("");
     setIsTyping(true);
 
-    // Look for matching sample query
-    const matched = sampleQueries.find(item => item.q.toLowerCase() === textToSend.toLowerCase());
+    try {
+      const res = await apiFetch('/api/v1/memory/chat', {
+        method: 'POST',
+        body: JSON.stringify({ query: textToSend }),
+      });
 
-    setTimeout(() => {
-      setIsTyping(false);
-      if (matched) {
-        setMessages(prev => [...prev, {
-          name: "Asistente RAG",
-          avatar: "RAG",
-          text: matched.a,
-          isAi: true,
-        }]);
-      } else {
-        setMessages(prev => [...prev, {
-          name: "Asistente RAG",
-          avatar: "RAG",
-          text: `Buscando en la memoria organizacional: "${textToSend}"... No se encontraron registros explícitos. Recuerda que no puedo inventar respuestas fuera de los documentos indexados.`,
-          isAi: true,
-        }]);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Error al consultar la memoria organizacional.');
       }
-    }, 1200);
+
+      const data = await res.json();
+      setMessages(prev => [...prev, {
+        name: "Asistente RAG",
+        avatar: "RAG",
+        text: data.answer,
+        isAi: true,
+        sources: data.sources,
+      }]);
+    } catch (error: any) {
+      setMessages(prev => [...prev, {
+        name: "Asistente RAG",
+        avatar: "RAG",
+        text: error?.message || "No se pudo conectar con el backend. Verifica que esté corriendo y que tenga configurada la OPENAI_API_KEY.",
+        isAi: true,
+        isError: true,
+      }]);
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   return (
@@ -139,7 +139,17 @@ export default function ChatContainer() {
                   )}
                 </div>
                 <div className={msg.isAi ? "chat-bubble chat-bubble-ai" : "chat-bubble chat-bubble-human"}>
+                  {msg.isError && <AlertCircle className="w-3.5 h-3.5 inline-block mr-1.5 text-red-400 -mt-0.5" />}
                   {msg.text}
+                  {msg.sources && msg.sources.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-[var(--border-color)]/50 flex flex-wrap gap-1.5">
+                      {msg.sources.map((s, sidx) => (
+                        <span key={sidx} className="text-[10px] bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-muted)] px-2 py-0.5 rounded-full">
+                          📄 {s.document_name} ({Math.round(s.similarity * 100)}%)
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

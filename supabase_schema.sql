@@ -77,15 +77,29 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 6. Documentos (Subidos a MinIO/Supabase Storage con RAG vectorial)
+-- 6. Documentos (Subidos con RAG vectorial real)
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    file_path TEXT NOT NULL, -- Ruta en el storage
+    file_path TEXT, -- Ruta en el storage (opcional, MVP guarda solo el texto)
     mime_type TEXT,
-    content TEXT NOT NULL, -- Texto completo extraído con Docling
-    embedding VECTOR(1536), -- Embedding vectorial del contenido o resumen
+    size_bytes BIGINT,
+    content TEXT, -- Texto completo extraído
+    status TEXT NOT NULL DEFAULT 'processing', -- 'processing', 'indexed', 'error'
+    error_message TEXT,
+    uploaded_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
+    embedding VECTOR(1536), -- Embedding vectorial del contenido o resumen (legacy, no usado por chunks)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 6.1 Fragmentos de Documentos (chunking para RAG de mayor precisión)
+CREATE TABLE IF NOT EXISTS document_chunks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    embedding VECTOR(1536),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -176,6 +190,7 @@ CREATE TABLE IF NOT EXISTS learnings (
 -- Crear índices HNSW para búsquedas vectoriales rápidas por distancia coseno
 CREATE INDEX ON messages USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON documents USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX ON document_chunks USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON meetings USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON decisions USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX ON library_assets USING hnsw (embedding vector_cosine_ops);

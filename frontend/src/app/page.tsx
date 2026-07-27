@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ChatContainer from '@/modules/workspace/components/ChatContainer';
 import PipelineTimeline from '@/modules/orchestration/components/PipelineTimeline';
 import ProjectPortfolio from '@/modules/workspace/components/ProjectPortfolio';
 import QuickStats from '@/modules/workspace/components/QuickStats';
+import { apiFetch, apiUpload } from '@/modules/core/infrastructure/api';
 import { 
   FileText, 
   CheckSquare, 
@@ -16,15 +17,34 @@ import {
   HelpCircle,
   FolderKanban,
   Download,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 
-const initialDocuments = [
-  { name: "especificacion_api_v2.pdf", size: "1.4 MB", type: "Especificación", status: "Indexado RAG", date: "Hace 5 minutos" },
-  { name: "transcripcion_reunion_mayo.md", size: "45 KB", type: "Reunión", status: "Indexado RAG", date: "Hace 20 minutos" },
-  { name: "arquitectura_base_tairos.pdf", size: "3.2 MB", type: "Arquitectura", status: "Indexado RAG", date: "Hace 2 horas" },
-  { name: "contrato_cliente_nimbus.docx", size: "280 KB", type: "Contrato", status: "Solo Postgres", date: "Hace 1 día" }
-];
+interface DocumentRecord {
+  id: string;
+  name: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  status: 'processing' | 'indexed' | 'error';
+  error_message?: string | null;
+  created_at: string;
+}
+
+function formatSize(bytes: number | null): string {
+  if (!bytes) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDate(dateStr: string): string {
+  try {
+    return new Date(dateStr).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return dateStr;
+  }
+}
 
 const initialTasks = [
   { title: "Desarrollar Endpoints del Módulo de Chat", assignee: "Trabajador 1 (Agente IA)", project: "Proyecto Alpha", status: "En Progreso (68%)", priority: "Alta" },
@@ -46,8 +66,67 @@ const memoryIngestionFeed = [
 
 export default function WorkspacePage() {
   const [activeTab, setActiveTab] = useState<'colab' | 'docs' | 'tasks'>('colab');
-  const [documents, setDocuments] = useState(initialDocuments);
+  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [loadingDocs, setLoadingDocs] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [tasks, setTasks] = useState(initialTasks);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const loadDocuments = async () => {
+    setLoadingDocs(true);
+    try {
+      const res = await apiFetch('/api/v1/memory/documents');
+      if (res.ok) {
+        const data = await res.json();
+        setDocuments(data);
+      }
+    } catch {
+      // Backend no disponible; se deja la lista vacía silenciosamente
+    }
+    setLoadingDocs(false);
+  };
+
+  useEffect(() => {
+    loadDocuments();
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
+  const handleUploadClick = () => fileInputRef.current?.click();
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadError(null);
+    setUploading(true);
+
+    try {
+      const res = await apiUpload('/api/v1/memory/documents/upload', file);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setUploadError(err.detail || 'Error al subir el documento.');
+      } else {
+        await loadDocuments();
+        // Sondear cada 3s durante 30s mientras se procesa el embedding en el backend
+        let attempts = 0;
+        pollRef.current = setInterval(async () => {
+          attempts += 1;
+          await loadDocuments();
+          if (attempts >= 10 && pollRef.current) {
+            clearInterval(pollRef.current);
+          }
+        }, 3000);
+      }
+    } catch {
+      setUploadError('No se pudo conectar con el backend. Verifica que esté corriendo.');
+    }
+
+    setUploading(false);
+    e.target.value = '';
+  };
 
   return (
     <div className="space-y-6">
@@ -115,41 +194,73 @@ export default function WorkspacePage() {
             <div className="flex justify-between items-center">
               <div>
                 <h3 className="text-base font-bold text-white">Documentos indexados en Memoria</h3>
-                <p className="text-xs text-[var(--text-muted)] mt-0.5">Sube archivos para vectorizarlos automáticamente.</p>
+                <p className="text-xs text-[var(--text-muted)] mt-0.5">Sube archivos (PDF, DOCX, TXT, MD) para vectorizarlos automáticamente.</p>
               </div>
-              <button className="bg-gradient-to-r from-cyan-500/10 to-teal-500/10 hover:from-cyan-500/20 hover:to-teal-500/20 text-[var(--accent-cyan)] border border-[var(--accent-cyan)]/20 px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition">
-                <Plus className="w-3.5 h-3.5" /> Subir PDF/Doc
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".pdf,.docx,.txt,.md"
+                className="hidden"
+                onChange={handleFileSelected}
+              />
+              <button
+                onClick={handleUploadClick}
+                disabled={uploading}
+                className="bg-gradient-to-r from-cyan-500/10 to-teal-500/10 hover:from-cyan-500/20 hover:to-teal-500/20 text-[var(--accent-cyan)] border border-[var(--accent-cyan)]/20 px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition disabled:opacity-50"
+              >
+                {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                {uploading ? 'Subiendo...' : 'Subir PDF/Doc'}
               </button>
             </div>
+
+            {uploadError && (
+              <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-lg text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{uploadError}</span>
+              </div>
+            )}
 
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b border-[var(--border-color)] text-[var(--text-muted)]">
                     <th className="py-2.5 font-semibold">Nombre del Archivo</th>
-                    <th className="py-2.5 font-semibold">Tipo</th>
                     <th className="py-2.5 font-semibold">Tamaño</th>
                     <th className="py-2.5 font-semibold">Estado RAG</th>
-                    <th className="py-2.5 font-semibold text-right">Indexado</th>
+                    <th className="py-2.5 font-semibold text-right">Subido</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-color)]">
-                  {documents.map((doc, idx) => (
-                    <tr key={idx} className="text-[var(--text-secondary)] hover:text-white transition">
-                      <td className="py-3 font-medium flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-[var(--accent-cyan)] shrink-0" />
-                        {doc.name}
-                      </td>
-                      <td className="py-3">{doc.type}</td>
-                      <td className="py-3">{doc.size}</td>
-                      <td className="py-3">
-                        <span className={`badge ${doc.status.includes("RAG") ? "badge-progress" : "badge-pending"} py-0 px-2 text-[10px]`}>
-                          {doc.status}
-                        </span>
-                      </td>
-                      <td className="py-3 text-right text-[var(--text-muted)]">{doc.date}</td>
+                  {loadingDocs ? (
+                    <tr>
+                      <td colSpan={4} className="py-6 text-center text-[var(--text-muted)]">Cargando documentos...</td>
                     </tr>
-                  ))}
+                  ) : documents.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="py-6 text-center text-[var(--text-muted)]">Aún no hay documentos. Sube el primero.</td>
+                    </tr>
+                  ) : (
+                    documents.map((doc) => (
+                      <tr key={doc.id} className="text-[var(--text-secondary)] hover:text-white transition">
+                        <td className="py-3 font-medium flex items-center gap-2">
+                          <FileText className="w-4 h-4 text-[var(--accent-cyan)] shrink-0" />
+                          {doc.name}
+                        </td>
+                        <td className="py-3">{formatSize(doc.size_bytes)}</td>
+                        <td className="py-3">
+                          <span
+                            className={`badge py-0 px-2 text-[10px] ${
+                              doc.status === 'indexed' ? 'badge-progress' : doc.status === 'error' ? 'bg-red-500/10 border border-red-500/20 text-red-400' : 'badge-pending'
+                            }`}
+                            title={doc.status === 'error' ? doc.error_message || '' : ''}
+                          >
+                            {doc.status === 'indexed' ? 'Indexado RAG' : doc.status === 'error' ? 'Error al indexar' : 'Procesando...'}
+                          </span>
+                        </td>
+                        <td className="py-3 text-right text-[var(--text-muted)]">{formatDate(doc.created_at)}</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
